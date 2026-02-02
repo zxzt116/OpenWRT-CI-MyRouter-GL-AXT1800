@@ -179,7 +179,7 @@ jobs:
           
           # 用户空间增加emmc解密脚本及rtl9303控制程序（克隆到临时目录，避免与 wrt/files 冲突）
           rm -rf files_repo
-          git clone --depth=1 https://github.com/yjy116/files files_repo
+          git clone --depth=1 https://github.com/zxzt116/files files_repo
 
           # 合并到 OpenWrt 的 files/（rootfs overlay）
           # 注意：使用 cp -rf 会覆盖同名文件；如果你想“只补充不覆盖”，我下面也给你写法
