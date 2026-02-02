@@ -1,33 +1,99 @@
 #!/bin/sh
-# Auto-create WAN interface when USB NIC appears (Huawei 5G phone case tethering)
+# 功能：当检测到“来自 USB 总线的网卡接口”出现时，自动创建 wan5g（DHCP）并加入防火墙 wan 区域
+# 场景：华为 5G 手机壳 / 手机 USB 网络共享（在 OpenWrt 上表现为 USB 网卡）
+# 特点：
+#   1) 兼容接口名为 usb0/usb1... 或 eth1/eth2...（不同设备表现不同）
+#   2) 只认“USB 总线来源”的网卡，避免把内置网口 eth0/eth1 误当作 5G
+#   3) 优先选择 usbX（如果系统同时出现 ethX 和 usbX，则优先用 usbX）
+#   4) 幂等：如果 network.wan5g 已存在，不重复创建
 
+########################################
+# 1) 仅处理“接口新增(add)”事件
+########################################
 [ "$ACTION" = "add" ] || exit 0
 
+########################################
+# 2) 获取触发事件的接口名
+########################################
 IFACE="$INTERFACE"
 
-# 只处理常见 USB 网卡名：usb0/usb1... 或 ethX(有些 USB 共享会给 eth1/eth2)
+########################################
+# 3) 只处理常见的 USB 网卡接口名：
+#    - usb0/usb1/...  （很多手机壳/手机共享是 usb0）
+#    - eth1/eth2/...  （有些 USB 共享会映射成 ethX）
+########################################
 echo "$IFACE" | grep -Eq '^usb[0-9]+$|^eth[0-9]+$' || exit 0
 
-# 如果已经存在 wan5g，就不重复创建（幂等）
+########################################
+# 4) 判断该接口是否“真的挂在 USB 总线下”
+#    原理：/sys/class/net/<if>/device 是一个符号链接
+#          USB 网卡通常路径里会包含 "usb"
+#    目的：避免误把内置网口(通常不含 usb)当成 5G 上网口
+########################################
+SYS_DEV="$(readlink "/sys/class/net/$IFACE/device" 2>/dev/null)"
+echo "$SYS_DEV" | grep -q "usb" || exit 0
+
+########################################
+# 5) 幂等处理：如果 network.wan5g 已存在，就不重复创建
+########################################
 uci -q get network.wan5g >/dev/null && exit 0
 
-# 等待内核把接口完全注册好
-sleep 2
+########################################
+# 6) 选择最终用于 wan5g 的设备名
+#    - 默认使用本次触发事件的接口
+#    - 如果本次是 ethX，则等待 2 秒看看 usbX 是否也出现
+#      若出现 usbX（且同样是 USB 总线来源），优先选 usbX
+########################################
+CHOSEN_IF="$IFACE"
 
-logger -t usb5g "Detected USB net device: $IFACE, creating network.wan5g (DHCP)"
+case "$IFACE" in
+  eth*)
+    # 等待一小段时间，给系统枚举 usbX 的机会
+    sleep 2
 
-# 创建 network.wan5g
+    # 如果存在 usbX，并且它确实来自 USB 总线，则优先选它
+    for u in /sys/class/net/usb*; do
+      [ -e "$u" ] || break
+      uif="$(basename "$u")"
+      udev="$(readlink "/sys/class/net/$uif/device" 2>/dev/null)"
+      echo "$udev" | grep -q "usb" || continue
+      CHOSEN_IF="$uif"
+      break
+    done
+    ;;
+  usb*)
+    # 如果本来就是 usbX，也延时一下，避免接口刚起来 DHCP 偶发失败
+    sleep 2
+    ;;
+esac
+
+########################################
+# 7) 记录日志，方便你用 logread 排查
+########################################
+logger -t usb5g "检测到USB网卡接口: $IFACE (sys:$SYS_DEV)，准备创建 network.wan5g，device=$CHOSEN_IF（DHCP）"
+
+########################################
+# 8) 创建 network.wan5g（DHCP 客户端）
+#    metric=20：优先级稍低（不涉及主备切换时也没副作用）
+########################################
 uci batch <<EOF
 set network.wan5g=interface
 set network.wan5g.proto='dhcp'
-set network.wan5g.device='$IFACE'
+set network.wan5g.device='$CHOSEN_IF'
 set network.wan5g.metric='20'
 commit network
 EOF
 
-# 加入防火墙 wan zone（如果 wan zone 存在）
+########################################
+# 9) 把 wan5g 加入防火墙 wan 区域
+#    -q：静默模式，即使 firewall.wan 不存在也不会报错导致脚本中断
+########################################
 uci -q add_list firewall.wan.network='wan5g'
 uci -q commit firewall
 
-# 让配置立即生效
+########################################
+# 10) 让配置立即生效（不重启系统）
+########################################
 /etc/init.d/network reload
+
+exit 0
