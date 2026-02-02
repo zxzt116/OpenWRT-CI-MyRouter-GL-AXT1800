@@ -1,0 +1,33 @@
+#!/bin/sh
+# Auto-create WAN interface when USB NIC appears (Huawei 5G phone case tethering)
+
+[ "$ACTION" = "add" ] || exit 0
+
+IFACE="$INTERFACE"
+
+# 只处理常见 USB 网卡名：usb0/usb1... 或 ethX(有些 USB 共享会给 eth1/eth2)
+echo "$IFACE" | grep -Eq '^usb[0-9]+$|^eth[0-9]+$' || exit 0
+
+# 如果已经存在 wan5g，就不重复创建（幂等）
+uci -q get network.wan5g >/dev/null && exit 0
+
+# 等待内核把接口完全注册好
+sleep 2
+
+logger -t usb5g "Detected USB net device: $IFACE, creating network.wan5g (DHCP)"
+
+# 创建 network.wan5g
+uci batch <<EOF
+set network.wan5g=interface
+set network.wan5g.proto='dhcp'
+set network.wan5g.device='$IFACE'
+set network.wan5g.metric='20'
+commit network
+EOF
+
+# 加入防火墙 wan zone（如果 wan zone 存在）
+uci -q add_list firewall.wan.network='wan5g'
+uci -q commit firewall
+
+# 让配置立即生效
+/etc/init.d/network reload
