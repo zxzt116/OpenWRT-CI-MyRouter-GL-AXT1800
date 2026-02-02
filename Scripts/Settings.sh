@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# 假设当前在 openwrt 源码根目录
+mkdir -p files/etc/hotplug.d/net
+cp -f ${GITHUB_WORKSPACE}/Scripts/files/etc/hotplug.d/net/99-usb-5g-auto-wan files/etc/hotplug.d/net/99-usb-5g-auto-wan
+chmod 755 files/etc/hotplug.d/net/99-usb-5g-auto-wan
+
 #移除luci-app-attendedsysupgrade
 sed -i "/attendedsysupgrade/d" $(find ./feeds/luci/collections/ -type f -name "Makefile")
 #修改默认主题
